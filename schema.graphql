@@ -1,0 +1,88 @@
+# AppSync API for the chat prototype.
+#
+# Authorization on the API:
+# - Default: AWS Lambda (authorizer/index.mjs). It checks the Go login JWT.
+#   JWT_SECRET on the function must match backend JWT_SECRET.
+# - Additional: API key. Go sends it as x-api-key. The browser never uses it.
+#
+# Directives below assume those two modes. listChats allows both: the browser
+# calls it with the JWT, and Go calls it with the API key so it can tell
+# "missing" from "forbidden" and enforce one active chat per location/group.
+# With the API key, listChats returns every chat in the location and last_read_at 0.
+#
+# DynamoDB tables
+# - Chat: PK id (S). GSI loc-index: PK loc_id (N), SK id (S).
+# - ChatMessage: PK chat_id (S), SK sk (S).
+# - UserChatRead: PK user_id (N), SK chat_id (S).
+#
+# Resolvers (JS runtime). Pipeline resolvers use resolvers/pipeline.js
+# as their request/response and run the functions in order.
+# - Query.listChats: functions/listChatsQuery.js (Chat) -> functions/attachLastRead.js (UserChatRead)
+# - Query.listMessages: functions/getChatForMessages.js (Chat) -> functions/queryMessages.js (ChatMessage)
+# - Mutation.createChat: functions/putChat.js (Chat)
+# - Mutation.createChatMessage: functions/putMessage.js (ChatMessage) -> functions/updateLastMessageAt.js (Chat)
+# - Mutation.markChatRead: functions/putRead.js (UserChatRead)
+# - Subscription.onNewChatMessage: functions/authorizeSubscription.js (Chat)
+
+type ChatSummary @aws_lambda @aws_api_key {
+  id: ID!
+  loc_id: Int!
+  type: String!
+  group_id: Int!
+  created_by: Int!
+  created_at: Int!
+  is_active: Boolean!
+  last_message_at: Int!
+  last_read_at: Int!
+}
+
+type ChatMessage @aws_lambda @aws_api_key {
+  chat_id: ID!
+  sk: String!
+  msg: String!
+  sender_id: Int!
+  created_at: Int!
+}
+
+type ChatMessageConnection @aws_lambda {
+  messages: [ChatMessage!]!
+  nextToken: String
+}
+
+type UserChatRead @aws_api_key {
+  user_id: Int!
+  chat_id: ID!
+  last_read_at: Int!
+}
+
+type Query {
+  listChats(loc_id: Int!): [ChatSummary!]! @aws_lambda @aws_api_key
+  listMessages(chat_id: ID!, limit: Int, nextToken: String): ChatMessageConnection! @aws_lambda
+}
+
+type Mutation {
+  createChat(
+    id: ID!
+    loc_id: Int!
+    type: String!
+    group_id: Int!
+    created_by: Int!
+    created_at: Int!
+    is_active: Boolean!
+    last_message_at: Int!
+  ): ChatSummary! @aws_api_key
+  createChatMessage(
+    chat_id: ID!
+    sk: String!
+    msg: String!
+    sender_id: Int!
+    created_at: Int!
+  ): ChatMessage! @aws_api_key
+  markChatRead(user_id: Int!, chat_id: ID!, last_read_at: Int!): UserChatRead! @aws_api_key
+}
+
+type Subscription {
+  onNewChatMessage(chat_id: ID!): ChatMessage
+    @aws_subscribe(mutations: ["createChatMessage"])
+    @aws_lambda
+}
